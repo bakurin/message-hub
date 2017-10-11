@@ -47,6 +47,10 @@ func (q *Queue) Pop() *Node {
 	return node
 }
 
+func (q *Queue) Count() int {
+	return q.count
+}
+
 func NewQueue(size int) *Queue {
 	return &Queue{
 		nodes: make([]*Node, size),
@@ -67,6 +71,7 @@ func main() {
 
 	http.Handle("/push", authMiddleware(responseHeaderMiddleware(pushHandler(messageQueue))))
 	http.Handle("/pop", authMiddleware(responseHeaderMiddleware(popHandler(messageQueue))))
+	http.Handle("/stat", authMiddleware(responseHeaderMiddleware(statHandler(messageQueue))))
 
 	err := http.ListenAndServe(fmt.Sprintf("%s:%d", host, port), nil)
 	if err != nil {
@@ -119,6 +124,13 @@ func popHandler(queue *Queue) http.Handler {
 		}
 
 		response := newResponse(http.StatusOK, node)
+		response.Write(w)
+	})
+}
+
+func statHandler(queue *Queue) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := newResponse(http.StatusOK, queue.Count())
 		response.Write(w)
 	})
 }
