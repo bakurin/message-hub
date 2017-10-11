@@ -65,8 +65,8 @@ func main() {
 	messageQueue = NewQueue(100)
 	authMiddleware := createAuthMiddleware(key)
 
-	http.Handle("/push", authMiddleware(pushHandler(messageQueue)))
-	http.Handle("/pop", authMiddleware(popHandler(messageQueue)))
+	http.Handle("/push", authMiddleware(responseHeaderMiddleware(pushHandler(messageQueue))))
+	http.Handle("/pop", authMiddleware(responseHeaderMiddleware(popHandler(messageQueue))))
 
 	err := http.ListenAndServe(fmt.Sprintf("%s:%d", host, port), nil)
 	if err != nil {
@@ -74,35 +74,52 @@ func main() {
 	}
 }
 
+func init() {
+	flag.StringVar(&key, "host", "", "API key")
+	flag.IntVar(&port, "port", 7001, "HTTP server port")
+	flag.StringVar(&key, "key", "", "API key")
+
+	flag.Parse()
+
+	if key == "" {
+		panic("api key must be set")
+	}
+}
+
 func pushHandler(queue *Queue) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
-			w.Write([]byte("error"))
+			response := newErrorResponse(http.StatusInternalServerError, err.Error())
+			response.Write(w)
 			return
 		}
 
 		data := json.RawMessage{}
 		err = json.Unmarshal(body, &data)
 		if err != nil {
-			w.Write([]byte("error"))
+			response := newErrorResponse(http.StatusInternalServerError, err.Error())
+			response.Write(w)
 			return
 		}
 
 		queue.Push(&Node{Data:data, DateTime: time.Now().Format(time.UnixDate)})
-		w.Write([]byte("ok"))
+		response := newResponse(http.StatusCreated, Payload{Ok: true})
+		response.Write(w)
 	})
 }
 
 func popHandler(queue *Queue) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		data, err := json.Marshal(queue.Pop())
-		if err != nil {
-			w.Write([]byte("error"))
+		node := queue.Pop()
+		if node == nil {
+			response := newErrorResponse(http.StatusNoContent, "queue is empty")
+			response.Write(w)
 			return
 		}
 
-		w.Write(data)
+		response := newResponse(http.StatusOK, node)
+		response.Write(w)
 	})
 }
 
@@ -119,14 +136,52 @@ func createAuthMiddleware(key string) func(next http.Handler) http.Handler {
 	}
 }
 
-func init() {
-	flag.StringVar(&key, "host", "", "API key")
-	flag.IntVar(&port, "port", 3030, "HTTP server port")
-	flag.StringVar(&key, "key", "", "API key")
+func responseHeaderMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		next.ServeHTTP(w, r)
+	})
+}
 
-	flag.Parse()
+type Payload struct {
+	Ok      bool   `json:"ok"`
+}
 
-	if key == "" {
-		panic("api key must be set")
+type ErrorPayload struct {
+	Ok      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+type Response struct {
+	StatusCode int
+	Payload interface {}
+}
+
+func newResponse(status int, payload interface{}) *Response {
+	return &Response{
+		StatusCode: status,
+		Payload: payload,
 	}
+}
+
+func newErrorResponse(status int, message string) *Response {
+	return &Response{
+		StatusCode: status,
+		Payload: ErrorPayload{
+			Ok: false,
+			Message: message,
+		},
+	}
+}
+
+func (response Response) Write(w http.ResponseWriter) {
+	data, err := json.Marshal(response.Payload)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("{\"ok\": false}"))
+		return
+	}
+
+	w.WriteHeader(response.StatusCode)
+	w.Write(data)
 }
