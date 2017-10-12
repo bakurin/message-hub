@@ -80,7 +80,7 @@ func main() {
 }
 
 func init() {
-	flag.StringVar(&key, "host", "", "API key")
+	flag.StringVar(&host, "host", "127.0.0.1", "API key")
 	flag.IntVar(&port, "port", 7001, "HTTP server port")
 	flag.StringVar(&key, "key", "", "API key")
 
