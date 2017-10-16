@@ -15,6 +15,12 @@ type Node struct {
 	DateTime string          `json:"date_time"`
 }
 
+type GetData struct {
+	Event  string `json:"event"`
+	Status string `json:"status"`
+	App    string `json:"app"`
+}
+
 type Queue struct {
 	nodes []*Node
 	size  int
@@ -93,25 +99,65 @@ func init() {
 
 func pushHandler(queue *Queue) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := ioutil.ReadAll(r.Body)
+		var (
+			err  error
+			data json.RawMessage
+		)
+
+		switch r.Method {
+		case http.MethodPost:
+			data, err = pushFromPost(r)
+			break
+		case http.MethodGet:
+			data, err = pushFromGet(r)
+			break
+		default:
+			response := newErrorResponse(http.StatusMethodNotAllowed, "not allowed")
+			response.Write(w)
+			return
+		}
+
 		if err != nil {
 			response := newErrorResponse(http.StatusInternalServerError, err.Error())
 			response.Write(w)
 			return
 		}
 
-		data := json.RawMessage{}
-		err = json.Unmarshal(body, &data)
-		if err != nil {
-			response := newErrorResponse(http.StatusInternalServerError, err.Error())
-			response.Write(w)
-			return
-		}
-
-		queue.Push(&Node{Data:data, DateTime: time.Now().Format(time.UnixDate)})
+		queue.Push(&Node{Data:data, DateTime: time.Now().Format(time.RFC3339)})
 		response := newResponse(http.StatusCreated, Payload{Ok: true})
 		response.Write(w)
 	})
+}
+
+func pushFromPost(r *http.Request) (json.RawMessage, error) {
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	data := json.RawMessage{}
+	err = json.Unmarshal(body, &data)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
+func pushFromGet(r *http.Request) (json.RawMessage, error) {
+	query := r.URL.Query()
+	data := GetData{
+		Event:  query.Get("event"),
+		Status: query.Get("status"),
+		App:    query.Get("app"),
+	}
+
+	content, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	return content, nil
 }
 
 func popHandler(queue *Queue) http.Handler {
@@ -156,7 +202,7 @@ func responseHeaderMiddleware(next http.Handler) http.Handler {
 }
 
 type Payload struct {
-	Ok      bool   `json:"ok"`
+	Ok bool `json:"ok"`
 }
 
 type ErrorPayload struct {
@@ -166,13 +212,13 @@ type ErrorPayload struct {
 
 type Response struct {
 	StatusCode int
-	Payload interface {}
+	Payload    interface{}
 }
 
 func newResponse(status int, payload interface{}) *Response {
 	return &Response{
 		StatusCode: status,
-		Payload: payload,
+		Payload:    payload,
 	}
 }
 
@@ -180,7 +226,7 @@ func newErrorResponse(status int, message string) *Response {
 	return &Response{
 		StatusCode: status,
 		Payload: ErrorPayload{
-			Ok: false,
+			Ok:      false,
 			Message: message,
 		},
 	}
