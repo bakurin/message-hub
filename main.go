@@ -160,20 +160,17 @@ func pushHandler(queue *queue) http.Handler {
 			data, err = pushFromGet(r)
 			break
 		default:
-			response := newErrorResponse(http.StatusMethodNotAllowed, "not allowed")
-			response.Write(w)
+			newErrorResponse(http.StatusMethodNotAllowed, "only GET and POST are allowed").Write(w)
 			return
 		}
 
 		if err != nil {
-			response := newErrorResponse(http.StatusInternalServerError, err.Error())
-			response.Write(w)
+			newErrorResponse(http.StatusInternalServerError, err.Error()).Write(w)
 			return
 		}
 
 		queue.Push(&node{Data: data, DateTime: time.Now().Format(time.RFC3339)})
-		response := newResponse(http.StatusCreated, payload{Ok: true})
-		response.Write(w)
+		newResponse(http.StatusCreated, payload{Ok: true}).Write(w)
 	})
 }
 
@@ -212,13 +209,11 @@ func popHandler(queue *queue) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		node := queue.Pop()
 		if node == nil {
-			response := newErrorResponse(http.StatusNoContent, "queue is empty")
-			response.Write(w)
+			newErrorResponse(http.StatusNoContent, "queue is empty").Write(w)
 			return
 		}
 
-		response := newResponse(http.StatusOK, node)
-		response.Write(w)
+		newResponse(http.StatusOK, node).Write(w)
 	})
 }
 
@@ -231,22 +226,22 @@ func statHandler(queue *queue) http.Handler {
 
 func lockHandler(lock *lock) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			newErrorResponse(http.StatusMethodNotAllowed, "only POST is allowed").Write(w)
+			return
+		}
+
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
-			response := newErrorResponse(http.StatusNoContent, "invald request")
-			response.Write(w)
+			newErrorResponse(http.StatusNoContent, "invald request").Write(w)
 			return
 		}
 
 		data := &lockPayload{}
-
-		if len(body) > 0 {
-			err = json.Unmarshal(body, &data)
-			if err != nil {
-				response := newErrorResponse(http.StatusNoContent, err.Error())
-				response.Write(w)
-				return
-			}
+		err = json.Unmarshal(body, &data)
+		if err != nil {
+			newErrorResponse(http.StatusNoContent, err.Error()).Write(w)
+			return
 		}
 
 		duration := lockDefaultDuration
@@ -255,9 +250,12 @@ func lockHandler(lock *lock) http.Handler {
 		}
 
 		lock.Lock(time.Duration(duration) * time.Second)
-		message := fmt.Sprintf("locked till: %s", lock.lockedUntil.Format(time.UnixDate))
-		response := newResponse(http.StatusCreated, message)
-		response.Write(w)
+		newResponse(
+			http.StatusCreated,
+			payload{
+				Ok:      true,
+				Message: fmt.Sprintf("locked till %s", lock.lockedUntil.Format(time.UnixDate)),
+			}).Write(w)
 	})
 }
 
@@ -278,9 +276,8 @@ func createLockMiddleware(lock *lock) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if lock.IsLocked() {
-				message := fmt.Sprintf("queue is locked till: %s", lock.lockedUntil.Format(time.UnixDate))
-				response := newErrorResponse(http.StatusNotAcceptable, message)
-				response.Write(w)
+				message := fmt.Sprintf("queue is locked till %s", lock.lockedUntil.Format(time.UnixDate))
+				newErrorResponse(http.StatusNotAcceptable, message).Write(w)
 				return
 			}
 
@@ -297,12 +294,8 @@ func responseHeaderMiddleware(next http.Handler) http.Handler {
 }
 
 type payload struct {
-	Ok bool `json:"ok"`
-}
-
-type errorPayload struct {
 	Ok      bool   `json:"ok"`
-	Message string `json:"message"`
+	Message string `json:"message,omitempty"`
 }
 
 type response struct {
@@ -320,7 +313,7 @@ func newResponse(status int, payload interface{}) *response {
 func newErrorResponse(status int, message string) *response {
 	return &response{
 		StatusCode: status,
-		Payload: errorPayload{
+		Payload: payload{
 			Ok:      false,
 			Message: message,
 		},
