@@ -1,0 +1,14 @@
+[Unit]
+Description=Release flusher application
+
+[Service]
+ExecStart=/home/ubuntu/message-hub --key=release2flush
+WorkingDirectory=/home/ubuntu
+Restart=on-failure
+RestartSec=3
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=flusher
+
+[Install]
+WantedBy=multi-user.target
