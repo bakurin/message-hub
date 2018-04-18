@@ -92,10 +92,6 @@ func (lock *lock) Lock(lockFor time.Duration) {
 	lock.mutex.Lock()
 	defer lock.mutex.Unlock()
 
-	if lock.IsLocked() {
-		return
-	}
-
 	lock.lockedUntil = time.Now().Add(lockFor)
 }
 
@@ -107,6 +103,11 @@ func newLock() *lock {
 
 type lockPayload struct {
 	Seconds int `json:"seconds,omitempty"`
+}
+
+type statPayload struct {
+	MessageCount int    `json:"message_count"`
+	LockedUntil  string `json:"queue_locked_until,omitempty"`
 }
 
 var (
@@ -124,7 +125,7 @@ func main() {
 
 	http.Handle("/push", authMiddleware(responseHeaderMiddleware(lockMiddleware(pushHandler(messageQueue)))))
 	http.Handle("/pop", authMiddleware(responseHeaderMiddleware(popHandler(messageQueue))))
-	http.Handle("/stat", authMiddleware(responseHeaderMiddleware(statHandler(messageQueue))))
+	http.Handle("/stat", authMiddleware(responseHeaderMiddleware(statHandler(messageQueue, lock))))
 	http.Handle("/lock", authMiddleware(responseHeaderMiddleware(lockHandler(lock))))
 
 	err := http.ListenAndServe(fmt.Sprintf("%s:%d", host, port), nil)
@@ -217,10 +218,17 @@ func popHandler(queue *queue) http.Handler {
 	})
 }
 
-func statHandler(queue *queue) http.Handler {
+func statHandler(queue *queue, lock *lock) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := newResponse(http.StatusOK, queue.Length())
-		response.Write(w)
+		lockedUntil := ""
+		if lock.IsLocked() {
+			lockedUntil = lock.lockedUntil.Format(time.UnixDate)
+		}
+
+		newResponse(http.StatusOK, statPayload{
+			MessageCount: queue.Length(),
+			LockedUntil:  lockedUntil,
+		}).Write(w)
 	})
 }
 
@@ -231,25 +239,27 @@ func lockHandler(lock *lock) http.Handler {
 			return
 		}
 
-		body, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			newErrorResponse(http.StatusNoContent, "invald request").Write(w)
+		data := &lockPayload{Seconds: lockDefaultDuration}
+		if r.ContentLength > 0 {
+			body, err := ioutil.ReadAll(r.Body)
+			if err != nil {
+				newErrorResponse(http.StatusBadRequest, "invald request").Write(w)
+				return
+			}
+
+			err = json.Unmarshal(body, &data)
+			if err != nil {
+				newErrorResponse(http.StatusNoContent, err.Error()).Write(w)
+				return
+			}
+		}
+
+		if data.Seconds <= 0 {
+			newErrorResponse(http.StatusNoContent, "locking time must be positive number").Write(w)
 			return
 		}
 
-		data := &lockPayload{}
-		err = json.Unmarshal(body, &data)
-		if err != nil {
-			newErrorResponse(http.StatusNoContent, err.Error()).Write(w)
-			return
-		}
-
-		duration := lockDefaultDuration
-		if data.Seconds > 0 {
-			duration = data.Seconds
-		}
-
-		lock.Lock(time.Duration(duration) * time.Second)
+		lock.Lock(time.Duration(data.Seconds) * time.Second)
 		newResponse(
 			http.StatusCreated,
 			payload{
