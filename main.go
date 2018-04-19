@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -12,68 +13,6 @@ import (
 )
 
 const lockDefaultDuration = 60
-
-type node struct {
-	Data     json.RawMessage `json:"data"`
-	DateTime string          `json:"date_time"`
-}
-
-type getData struct {
-	Event  string `json:"event"`
-	Status string `json:"status"`
-	App    string `json:"app"`
-}
-
-type queue struct {
-	nodes []*node
-	size  int
-	head  int
-	tail  int
-	count int
-	mutex *sync.Mutex
-}
-
-func (q *queue) Push(n *node) {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-
-	if q.head == q.tail && q.count > 0 {
-		nodes := make([]*node, len(q.nodes)+q.size)
-		copy(nodes, q.nodes[q.head:])
-		copy(nodes[len(q.nodes)-q.head:], q.nodes[:q.head])
-		q.head = 0
-		q.tail = len(q.nodes)
-		q.nodes = nodes
-	}
-	q.nodes[q.tail] = n
-	q.tail = (q.tail + 1) % len(q.nodes)
-	q.count++
-}
-
-func (q *queue) Pop() *node {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-
-	if q.count == 0 {
-		return nil
-	}
-	node := q.nodes[q.head]
-	q.head = (q.head + 1) % len(q.nodes)
-	q.count--
-	return node
-}
-
-func (q *queue) Length() int {
-	return q.count
-}
-
-func newQueue(size int) *queue {
-	return &queue{
-		nodes: make([]*node, size),
-		size:  size,
-		mutex: &sync.Mutex{},
-	}
-}
 
 type lock struct {
 	lockedUntil time.Time
@@ -106,8 +45,9 @@ type lockPayload struct {
 }
 
 type statPayload struct {
-	MessageCount int    `json:"message_count"`
-	LockedUntil  string `json:"queue_locked_until,omitempty"`
+	MessageCount int         `json:"message_count"`
+	LockedUntil  string      `json:"queue_locked_until,omitempty"`
+	RequestLog   *requestLog `json:"request_log"`
 }
 
 var (
@@ -115,18 +55,34 @@ var (
 	port         int
 	key          string
 	messageQueue *queue
+	users        []*user
 )
 
-func main() {
-	messageQueue = newQueue(100)
-	lock := newLock()
-	authMiddleware := createAuthMiddleware(key)
-	lockMiddleware := createLockMiddleware(lock)
+func init() {
+	file, err := ioutil.ReadFile("./users.json")
+	if err != nil {
+		panic(err)
+	}
 
-	http.Handle("/push", authMiddleware(responseHeaderMiddleware(lockMiddleware(pushHandler(messageQueue)))))
-	http.Handle("/pop", authMiddleware(responseHeaderMiddleware(popHandler(messageQueue))))
-	http.Handle("/stat", authMiddleware(responseHeaderMiddleware(statHandler(messageQueue, lock))))
-	http.Handle("/lock", authMiddleware(responseHeaderMiddleware(lockHandler(lock))))
+	json.Unmarshal(file, &users)
+
+	if len(users) == 0 {
+		panic(errors.New("user list is empty"))
+	}
+}
+
+func main() {
+	messageQueue = newQueue(1)
+	lock := newLock()
+	requestLog := make(requestLog, 0, 10)
+	authMiddleware := createAuthMiddleware(users)
+	lockMiddleware := createLockMiddleware(lock)
+	logMiddleware := createLogMiddleware(&requestLog)
+
+	http.Handle("/push", httpHeaderMiddleware(authMiddleware(logMiddleware(lockMiddleware(pushHandler(messageQueue))))))
+	http.Handle("/pop", httpHeaderMiddleware(authMiddleware(popHandler(messageQueue))))
+	http.Handle("/stat", httpHeaderMiddleware(authMiddleware(statHandler(messageQueue, lock, &requestLog))))
+	http.Handle("/lock", httpHeaderMiddleware(authMiddleware(lockHandler(lock))))
 
 	err := http.ListenAndServe(fmt.Sprintf("%s:%d", host, port), nil)
 	if err != nil {
@@ -218,7 +174,7 @@ func popHandler(queue *queue) http.Handler {
 	})
 }
 
-func statHandler(queue *queue, lock *lock) http.Handler {
+func statHandler(queue *queue, lock *lock, log *requestLog) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lockedUntil := ""
 		if lock.IsLocked() {
@@ -228,6 +184,7 @@ func statHandler(queue *queue, lock *lock) http.Handler {
 		newResponse(http.StatusOK, statPayload{
 			MessageCount: queue.Length(),
 			LockedUntil:  lockedUntil,
+			RequestLog:   log,
 		}).Write(w)
 	})
 }
@@ -266,40 +223,6 @@ func lockHandler(lock *lock) http.Handler {
 				Ok:      true,
 				Message: fmt.Sprintf("locked till %s", lock.lockedUntil.Format(time.UnixDate)),
 			}).Write(w)
-	})
-}
-
-func createAuthMiddleware(key string) func(next http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Query().Get("key") != key {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-func createLockMiddleware(lock *lock) func(next http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if lock.IsLocked() {
-				message := fmt.Sprintf("queue is locked till %s", lock.lockedUntil.Format(time.UnixDate))
-				newErrorResponse(http.StatusNotAcceptable, message).Write(w)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-func responseHeaderMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		next.ServeHTTP(w, r)
 	})
 }
 
