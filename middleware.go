@@ -91,7 +91,6 @@ func createLogMiddleware(log *requestLog) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user := r.Context().Value(requestUserContextKey).(*user)
-			fmt.Println(user.Name)
 
 			log.Add(&requestLogEntry{
 				UserName:  user.Name,

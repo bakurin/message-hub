@@ -2,7 +2,7 @@
 Description=Release flusher application
 
 [Service]
-ExecStart=/home/ubuntu/message-hub --key=release2flush
+ExecStart=/home/ubuntu/message-hub --users=/home/ubuntu/users.json
 WorkingDirectory=/home/ubuntu
 Restart=on-failure
 RestartSec=3

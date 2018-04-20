@@ -53,23 +53,10 @@ type statPayload struct {
 var (
 	host         string
 	port         int
-	key          string
 	messageQueue *queue
 	users        []*user
+	usersList    string
 )
-
-func init() {
-	file, err := ioutil.ReadFile("./users.json")
-	if err != nil {
-		panic(err)
-	}
-
-	json.Unmarshal(file, &users)
-
-	if len(users) == 0 {
-		panic(errors.New("user list is empty"))
-	}
-}
 
 func main() {
 	messageQueue = newQueue(1)
@@ -91,14 +78,19 @@ func main() {
 }
 
 func init() {
-	flag.StringVar(&host, "host", "127.0.0.1", "API key")
+	flag.StringVar(&host, "host", "127.0.0.1", "HTTP server host")
 	flag.IntVar(&port, "port", 7001, "HTTP server port")
-	flag.StringVar(&key, "key", "", "API key")
-
+	flag.StringVar(&usersList, "users", "./users.json", "File path of users list in json format")
 	flag.Parse()
 
-	if key == "" {
-		panic("api key must be set")
+	file, err := ioutil.ReadFile(usersList)
+	if err != nil {
+		panic(err)
+	}
+
+	json.Unmarshal(file, &users)
+	if len(users) == 0 {
+		panic(errors.New("user list is empty"))
 	}
 }
 
