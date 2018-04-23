@@ -28,6 +28,10 @@ func (queue *queue) Push(node *node) {
 }
 
 func (queue *queue) Pop() *node {
+	if len(queue.nodes) == 0 {
+		return nil
+	}
+
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()
 
