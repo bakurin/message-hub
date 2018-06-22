@@ -2,17 +2,28 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/logutils"
+	"github.com/jessevdk/go-flags"
 )
 
 const lockDefaultDuration = 60
+
+var revision = "dev"
+
+type opts struct {
+	Host  string `long:"host" env:"MESSAGE_HUB_HOST" description:"HTTP server host" default:"127.0.0.1"`
+	Port  int    `long:"port" env:"MESSAGE_HUB_PORT" description:"HTTP server port" default:"7001"`
+	Users string `long:"users" env:"MESSAGE_HUB_USERS" description:"file path of users list in json format" default:"./users.json"`
+	Debug bool   `long:"debug" env:"DEBUG" description:"debug mode"`
+}
 
 type lock struct {
 	lockedUntil time.Time
@@ -50,48 +61,69 @@ type statPayload struct {
 	RequestLog   *requestLog `json:"request_log"`
 }
 
-var (
-	host         string
-	port         int
-	messageQueue *queue
-	users        []*user
-	usersList    string
-)
-
 func main() {
-	messageQueue = newQueue(1)
+	fmt.Printf("Message Hub version %s\n", revision)
+
+	var opts opts
+	p := flags.NewParser(&opts, flags.Default)
+	if _, err := p.ParseArgs(os.Args[1:]); err != nil {
+		os.Exit(1)
+	}
+
+	setupLog(opts.Debug)
+
+	users := loadUsers(opts.Users)
+	messageQueue := newQueue(50)
 	lock := newLock()
-	requestLog := make(requestLog, 0, 10)
+	requestLog := newRequestLog(20)
 	authMiddleware := createAuthMiddleware(users)
 	lockMiddleware := createLockMiddleware(lock)
-	logMiddleware := createLogMiddleware(&requestLog)
+	logMiddleware := createLogMiddleware(requestLog)
 
 	http.Handle("/push", httpHeaderMiddleware(authMiddleware(logMiddleware(lockMiddleware(pushHandler(messageQueue))))))
 	http.Handle("/pop", httpHeaderMiddleware(authMiddleware(popHandler(messageQueue))))
-	http.Handle("/stat", httpHeaderMiddleware(authMiddleware(statHandler(messageQueue, lock, &requestLog))))
+	http.Handle("/stat", httpHeaderMiddleware(authMiddleware(statHandler(messageQueue, lock, requestLog))))
 	http.Handle("/lock", httpHeaderMiddleware(authMiddleware(lockHandler(lock))))
 
-	err := http.ListenAndServe(fmt.Sprintf("%s:%d", host, port), nil)
+	err := http.ListenAndServe(fmt.Sprintf("%s:%d", opts.Host, opts.Port), nil)
 	if err != nil {
-		log.Fatal("listen and serve: ", err)
+		log.Fatalf("[ERROR] listen and serve: %v", err)
 	}
 }
 
-func init() {
-	flag.StringVar(&host, "host", "127.0.0.1", "HTTP server host")
-	flag.IntVar(&port, "port", 7001, "HTTP server port")
-	flag.StringVar(&usersList, "users", "./users.json", "File path of users list in json format")
-	flag.Parse()
-
-	file, err := ioutil.ReadFile(usersList)
+func loadUsers(path string) []*user {
+	file, err := ioutil.ReadFile(path)
 	if err != nil {
-		panic(err)
+		log.Panicf("[ERROR] unable read file %s", path)
 	}
 
-	json.Unmarshal(file, &users)
-	if len(users) == 0 {
-		panic(errors.New("user list is empty"))
+	var users []*user
+	err = json.Unmarshal(file, &users)
+	if err != nil {
+		log.Panicf("[ERROR] unable to load user list")
 	}
+
+	if len(users) == 0 {
+		log.Panicf("[WARNING] user list is empty")
+	}
+
+	return users
+}
+
+func setupLog(debug bool) {
+	filter := &logutils.LevelFilter{
+		Levels:   []logutils.LogLevel{"DEBUG", "INFO", "WARN", "ERROR"},
+		MinLevel: logutils.LogLevel("INFO"),
+		Writer:   os.Stdout,
+	}
+
+	log.SetFlags(log.Ldate | log.Ltime)
+
+	if debug {
+		log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
+		filter.MinLevel = logutils.LogLevel("DEBUG")
+	}
+	log.SetOutput(filter)
 }
 
 func pushHandler(queue *queue) http.Handler {

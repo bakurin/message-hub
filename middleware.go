@@ -24,14 +24,24 @@ type requestLogEntry struct {
 	Timestamp string `json:"timestamp"`
 }
 
-type requestLog []*requestLogEntry
+type requestLog struct {
+	entries  []*requestLogEntry
+	capacity int
+}
+
+func newRequestLog(cap int) *requestLog {
+	return &requestLog{
+		entries:  make([]*requestLogEntry, 0, cap),
+		capacity: cap,
+	}
+}
 
 func (log *requestLog) Add(entry *requestLogEntry) {
-	if cap(*log) == len(*log) {
-		*log = (*log)[1:len(*log)]
+	if len(log.entries) == log.capacity {
+		log.entries = (log.entries)[1:]
 	}
 
-	*log = append(*log, entry)
+	log.entries = append(log.entries, entry)
 }
 
 const requestUserContextKey requestUser = "user"
